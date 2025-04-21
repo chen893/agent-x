@@ -1,5 +1,6 @@
 import { AIAgent } from "../../agent";
 
+import { type streamText } from "ai";
 export class ProductManagerAgent extends AIAgent {
   /**
    * 构造函数
@@ -16,22 +17,12 @@ export class ProductManagerAgent extends AIAgent {
    * @param input 任务输入
    * @returns 任务输出
    */
-  async performTask(input: string): Promise<string> {
+  performTaskStream(input: string): ReturnType<typeof streamText> {
     return this.createPRD(input);
-
-    // 基于输入的类型进行不同的处理
-    if (input.includes("需求分析")) {
-      return this.analyzeRequirements(input);
-    } else if (input.includes("用户故事")) {
-      return this.createUserStories(input);
-    } else if (input.includes("产品规划")) {
-      return this.createProductRoadmap(input);
-    } else if (input.includes("功能优先级")) {
-      return this.prioritizeFeatures(input);
-    } else {
-      // 默认处理流程
-      return this.queryLLM(`作为产品经理，请回应以下内容：${input}`);
-    }
+  }
+  performTask(input: string): Promise<string> {
+    // return this.createPRD(input);
+    return this.queryLLM(input);
   }
 
   /**
@@ -128,26 +119,79 @@ export class ProductManagerAgent extends AIAgent {
    * @returns PRD文档内容
    */
   // productName: string,
-  async createPRD(description: string): Promise<string> {
+  createPRD(description: string): ReturnType<typeof streamText> {
     //       // 产品名称：${productName}
 
-    const prompt = `
-      作为产品经理，请为以下产品创建一份详细的PRD（产品需求文档）：
-      
-      产品描述：${description}
-      
-      PRD应包含以下部分：
-      1. 产品概述
-      2. 目标用户
-      3. 用户痛点及解决方案
-      4. 核心功能详细说明
-      5. 用户流程图
-      6. 界面原型描述
-      7. 非功能性需求（性能、安全等）
-      8. 成功指标
-    `;
+    // const prompt = `
+    //   作为产品经理，请为以下产品创建一份详细的PRD（产品需求文档），mvp阶段：
 
-    return this.queryLLM(prompt);
+    //   产品描述：${description}
+
+    //   PRD应包含以下部分：
+    //   1. 产品概述
+    //   2. 目标用户
+    //   3. 用户痛点及解决方案
+    //   4. 核心功能详细说明
+    //   5. 用户流程图
+    //   6. 界面原型描述
+    //   7. 非功能性需求（性能、安全等）
+    //   8. 成功指标
+    // `;
+
+    console.log("description", description);
+    const prompt = `
+
+角色定位
+你是一位注重用户体验、追求优雅简洁的产品需求分析师。擅长从用户的一句话需求中，提炼出最核心的痛点，并设计简洁、可用、体验愉悦的解决方案。
+
+核心原则
+✅ 简洁优雅：不堆砌功能，也不过度简化，确保方案实用且愉悦
+✅ 用户导向：始终围绕用户的核心问题设计解决方案
+✅ 结构化思维：逻辑清晰，避免模糊描述
+✅ 技术可行：结合给定的技术栈，提供可实现的设计
+✅ 确保页面美观，符合高级ui设计师审美
+
+输出格式
+你的输出是一份清晰、结构化的轻量级PRD，包含以下部分：
+
+1. 需求背景（Context）
+🔹 用1-2句话说明用户的核心问题或场景
+（例：用户希望快速记录灵感，但现有工具操作繁琐）
+
+2. 产品目标（Goal）
+🔹 一句话定义这个方案要解决的核心问题
+（例：让用户能快速记录灵感，并方便后续查找）
+
+3. 核心用户场景（Key User Story）
+🔹 描述1-2个最关键的场景，格式：
+“作为 [用户角色]，我想要 [做什么]，以便 [获得什么价值]”
+（例：作为创作者，我想要快速输入并保存灵感，以便后续整理成完整内容）
+
+4. 功能设计（Features）
+🔹 列出2-3个最必要的功能，确保体验流畅
+（例：① 极简输入框，支持快速记录；② 自动按时间归档；③ 支持标签分类）
+
+5. 验收标准（Success Metrics）
+🔹 定义如何判断这个方案是否成功（可量化或可观测）
+（例：用户能在5秒内完成一次灵感记录，并能通过时间线或标签找回）
+
+6. 技术考量（Tech Considerations，可选）
+🔹 如果用户提供了技术栈，可简要说明如何利用现有技术实现
+
+📌 用户需求输入：
+${description}
+
+🛠 技术栈（如有）：
+${this.techStack}
+
+请基于用户需求，输出一份简洁优雅的PRD！ 
+（仅输出PRD，无需额外解释，不要输出任何解释）
+
+
+`;
+
+    // return this.queryLLM(prompt);
+    return this.llm.streamText(prompt);
   }
 
   /**

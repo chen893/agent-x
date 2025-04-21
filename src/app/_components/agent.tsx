@@ -1,6 +1,6 @@
 "use client";
 import { api } from "@/trpc/react";
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -18,10 +18,17 @@ import {
   ArrowPathIcon,
   CodeBracketIcon,
   DocumentTextIcon,
-  CubeIcon,
   PlayIcon,
   EyeIcon,
 } from "@heroicons/react/24/outline";
+
+import {
+  containsExactlyOneHtmlBlock,
+  extractFencedCodeBlocks,
+  fixTruncatedHtmlBlock,
+} from "@/lib/utils";
+import { useCompletion } from "@ai-sdk/react";
+
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Loader2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -29,74 +36,132 @@ import remarkGfm from "remark-gfm";
 import { CodePreview } from "@/components/CodePreview";
 import { motion, AnimatePresence } from "framer-motion";
 
-type FileType = "html" | "css" | "js";
+type FileType = "html" | "js";
 
 export const Agent = () => {
   const [requirement, setRequirement] = useState("");
-  const [document, setDocument] = useState("");
-  const [architectureDoc, setArchitectureDoc] = useState<
-    Record<string, string>
-  >({
-    html: "",
-    css: "",
-    js: "",
-  });
   const [codeImplementation, setCodeImplementation] = useState<
     Record<string, string>
   >({
     html: "",
-    css: "",
     js: "",
   });
+
+  const {
+    completion: document,
+    complete,
+    isLoading: isPending,
+    error,
+  } = useCompletion({
+    api: "/api/agents/product-manager",
+    onFinish: () => {
+      setActiveStep(2);
+    },
+  });
+
+  // const
+
   const [currentFile, setCurrentFile] = useState<FileType>("html");
+  const activeFileRef = useRef<FileType>("html");
   const [copiedText, setCopiedText] = useState<string | null>(null);
   const [activeStep, setActiveStep] = useState<number>(1);
   const [isGeneratingAll, setIsGeneratingAll] = useState<boolean>(false);
   const [currentGeneratingFile, setCurrentGeneratingFile] =
     useState<FileType | null>(null);
 
-  const { mutate, isPending } = api.agent.generateRequirementDoc.useMutation({
-    onSuccess: (data) => {
-      setDocument(data);
-      setActiveStep(2);
+  // 使用 useCompletion 代替 api.agent.createSoftwareDeveloper
+  const {
+    completion: continueCodeCompletion,
+    complete: completeContinueCode,
+    isLoading: isContinueCodeLoading,
+  } = useCompletion({
+    api: "/api/agents/software-developer/continue-code",
+    onFinish: (prompt, completion) => {
+      console.log("continueCodeCompletion", completion);
+
+      const getNewCode = (sourceCode: string) => {
+        return (
+          sourceCode?.split("\n")?.slice(0, -5)?.join("\n") +
+          extractFencedCodeBlocks(completion)?.[0]?.code
+        );
+      };
+      setCodeImplementation((prev) => ({
+        ...prev,
+        [activeFileRef.current]: getNewCode(
+          prev[activeFileRef.current ?? "html"] ?? "",
+        ),
+      }));
     },
   });
 
-  const { mutate: createArchitecture, isPending: isArchitecturePending } =
-    api.agent.createSoftwareArchitect.useMutation({
-      onSuccess: (data) => {
-        console.log("data", data);
-        setArchitectureDoc(data);
-        setActiveStep(3);
-      },
-    });
+  const {
+    completion: codeCompletion,
+    complete: completeCode,
+    isLoading: isCodeLoading,
+  } = useCompletion({
+    api: "/api/agents/software-developer",
+    onFinish: (prompt, completion) => {
+      // 使用ref中存储的当前活动文件类型
+      const fileType = activeFileRef.current;
+      console.log("activeFileRef.current", fileType);
+      console.log("codeCompletion", completion);
 
-  const { mutate: generateCode, isPending: isCodePending } =
-    api.agent.createSoftwareDeveloper.useMutation({
-      onSuccess: (data) => {
+      console.log(
+        "extractFencedCodeBlocks",
+        extractFencedCodeBlocks(completion),
+      );
+
+      if (!containsExactlyOneHtmlBlock(completion)) {
+        const sourceCode = fixTruncatedHtmlBlock(completion).html;
+        completeContinueCode("", {
+          body: {
+            requirement: document,
+            architectureDoc: "{}",
+            sourceCode: sourceCode,
+            targetFile: fileType,
+          },
+        }).catch((error) => {
+          console.error("续写代码失败:", error);
+        });
+        // 将生成的代码设置到相应的文件
         setCodeImplementation((prev) => ({
           ...prev,
-          [currentFile]: data,
+          [fileType]: sourceCode ?? "",
         }));
+      } else {
+        // 将生成的代码设置到相应的文件
+        setCodeImplementation((prev) => ({
+          ...prev,
+          [fileType]: extractFencedCodeBlocks(completion)?.[0]?.code ?? "",
+        }));
+      }
 
-        // 如果是在顺序生成过程中，通知已完成
-        if (isGeneratingAll && resolveGeneratePromise) {
-          setCurrentGeneratingFile(null); // 清除当前生成标记
-          resolveGeneratePromise();
-          resolveGeneratePromise = null;
-        }
-      },
-    });
+      // 如果是在顺序生成过程中，处理下一个
+      if (isGeneratingAll && currentGeneratingFile) {
+        setCurrentGeneratingFile(null);
+      }
+    },
+  });
+
+  // const { mutate, isPending } = api.agent.generateRequirementDoc.useMutation({
+  //   onSuccess: (data) => {
+  //     setDocument(data);
+  //     setActiveStep(2);
+  //   },
+  // });
 
   // 用于存储当前生成代码的Promise resolve函数
-  let resolveGeneratePromise: (() => void) | null = null;
+  // let resolveGeneratePromise: (() => void) | null = null;
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setRequirement(e.target.value);
   };
 
-  const handleGenerateCode = (fileType: FileType) => {
+  const handleGenerateCode = async (fileType: FileType) => {
+    console.log("handleGenerateCode", fileType);
     setCurrentFile(fileType);
+    activeFileRef.current = fileType;
+    setCurrentGeneratingFile(fileType);
     const otherCode: Record<string, string> = {};
     Object.entries(codeImplementation).forEach(([key, value]) => {
       if (key !== fileType) {
@@ -105,11 +170,15 @@ export const Agent = () => {
         otherCode[key] = "";
       }
     });
-    generateCode({
-      requirement: document,
-      architectureDoc: JSON.stringify(architectureDoc),
-      history: otherCode,
-      targetFile: fileType,
+
+    // 使用 completeCode 代替 generateCode
+    await completeCode("", {
+      body: {
+        requirement: document,
+        architectureDoc: "{}",
+        history: otherCode,
+        targetFile: fileType,
+      },
     });
   };
 
@@ -135,8 +204,7 @@ export const Agent = () => {
 
       // 添加文件到zip
       Object.entries(codeImplementation).forEach(([key, value]) => {
-        const extension =
-          key === "html" ? ".html" : key === "css" ? ".css" : ".js";
+        const extension = key === "html" ? ".html" : ".js";
         zip.file(`index${extension}`, value);
       });
 
@@ -151,36 +219,36 @@ export const Agent = () => {
   };
 
   // 顺序生成单个文件类型的代码
-  const generateCodeAsync = (fileType: FileType): Promise<void> => {
-    return new Promise((resolve) => {
-      setCurrentFile(fileType);
-      setCurrentGeneratingFile(fileType);
-      resolveGeneratePromise = resolve;
+  const generateCodeAsync = async (fileType: FileType): Promise<void> => {
+    setCurrentFile(fileType);
+    activeFileRef.current = fileType;
+    setCurrentGeneratingFile(fileType);
 
-      const otherCode: Record<string, string> = {};
-      Object.entries(codeImplementation).forEach(([key, value]) => {
-        if (key !== fileType) {
-          otherCode[key] = value || "";
-        } else {
-          otherCode[key] = "";
-        }
-      });
+    const otherCode: Record<string, string> = {};
+    Object.entries(codeImplementation).forEach(([key, value]) => {
+      if (key !== fileType) {
+        otherCode[key] = value || "";
+      } else {
+        otherCode[key] = "";
+      }
+    });
 
-      generateCode({
+    // 使用 completeCode 代替 generateCode
+    await completeCode("", {
+      body: {
         requirement: document,
-        architectureDoc: JSON.stringify(architectureDoc),
+        architectureDoc: "{}",
         history: otherCode,
         targetFile: fileType,
-      });
+      },
     });
   };
 
   const handleGenerateAllCode = async () => {
     setIsGeneratingAll(true);
     try {
-      // 按顺序生成HTML、CSS、JS
+      // 按顺序生成HTML和JS
       await generateCodeAsync("html");
-      await generateCodeAsync("css");
       await generateCodeAsync("js");
     } catch (error) {
       console.error("生成代码失败:", error);
@@ -200,6 +268,7 @@ export const Agent = () => {
           <CardTitle className="text-center text-xl font-medium text-[#1d1d1f] sm:text-2xl">
             AI代码生成助手
           </CardTitle>
+
           <CardDescription className="text-center text-sm text-[#86868b] sm:text-base">
             输入您的项目需求，我们将为您生成详细的需求文档、架构设计和代码实现
           </CardDescription>
@@ -230,21 +299,13 @@ export const Agent = () => {
             >
               2
             </motion.div>
-            <div
-              className={`h-0.5 flex-1 transition-colors duration-300 ${activeStep >= 3 ? "bg-[#0071e3]" : "bg-[#e6e6e6]"}`}
-            ></div>
-            <motion.div
-              initial={{ scale: 0.9, opacity: 0.8 }}
-              animate={{
-                scale: activeStep >= 3 ? 1 : 0.9,
-                opacity: activeStep >= 3 ? 1 : 0.8,
-              }}
-              className={`flex h-8 w-8 items-center justify-center rounded-full text-sm font-medium sm:h-9 sm:w-9 ${activeStep >= 3 ? "bg-[#0071e3] text-white" : "bg-[#f5f5f7] text-[#86868b]"}`}
-            >
-              3
-            </motion.div>
           </div>
-
+          <div className="space-y-3 sm:space-y-4">
+            isCodeLoading：{isCodeLoading ? "true" : "false"}
+            \n error: {error?.message}
+            \n currentFile：{currentFile}
+            \n code: {codeCompletion}
+          </div>
           <div className="space-y-3 sm:space-y-4">
             <div className="flex items-center space-x-2">
               <DocumentTextIcon className="h-4 w-4 text-[#0071e3] sm:h-5 sm:w-5" />
@@ -266,7 +327,7 @@ export const Agent = () => {
               />
               <Button
                 className="h-10 shrink-0 rounded-xl bg-[#0071e3] px-4 text-sm text-white transition-colors hover:bg-[#0077ed] active:bg-[#006edb] disabled:opacity-50 sm:h-12 sm:px-6 sm:text-base"
-                onClick={() => mutate({ requirement: requirement })}
+                onClick={() => complete(requirement)}
                 disabled={isPending || !requirement.trim()}
               >
                 {isPending ? (
@@ -301,6 +362,7 @@ export const Agent = () => {
                 <div className="relative">
                   <div className="prose prose-blue max-h-64 overflow-y-auto rounded-xl border border-[#e6e6e6] bg-[#fafafa] p-3 text-sm text-[#1d1d1f] sm:max-h-80 sm:p-5 sm:text-base">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {/* {document} */}
                       {document}
                     </ReactMarkdown>
                   </div>
@@ -320,97 +382,8 @@ export const Agent = () => {
                     )}
                   </motion.button>
                 </div>
-                <Button
-                  className="mt-3 w-full rounded-xl bg-[#0071e3] py-2 text-sm transition-all duration-200 hover:bg-[#0077ed] active:bg-[#006edb] disabled:opacity-50 sm:mt-4 sm:py-2.5 sm:text-base"
-                  onClick={() => createArchitecture({ document })}
-                  disabled={isArchitecturePending}
-                >
-                  {isArchitecturePending ? (
-                    <span className="flex items-center justify-center">
-                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin sm:mr-2 sm:h-4 sm:w-4" />
-                      生成架构中...
-                    </span>
-                  ) : !architectureDoc.html ? (
-                    <span className="flex items-center justify-center">
-                      <CubeIcon className="mr-1.5 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
-                      生成软件架构
-                    </span>
-                  ) : (
-                    <span className="flex items-center justify-center">
-                      <ArrowPathIcon className="mr-1.5 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
-                      重新生成软件架构
-                    </span>
-                  )}
-                </Button>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          <AnimatePresence>
-            {architectureDoc.html && (
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.3 }}
-                className="rounded-2xl border border-[#e6e6e6] bg-white p-4 shadow-[0_4px_12px_rgba(0,0,0,0.04)] sm:p-6"
-              >
-                <div className="mb-3 flex items-center space-x-2 sm:mb-4">
-                  <CubeIcon className="h-4 w-4 text-[#0071e3] sm:h-5 sm:w-5" />
-                  <h3 className="text-base font-medium text-[#1d1d1f] sm:text-lg">
-                    软件架构
-                  </h3>
-                </div>
-
-                <Tabs defaultValue="html" className="w-full">
-                  <TabsList className="mb-3 grid grid-cols-3 gap-1 rounded-xl bg-[#f5f5f7] p-1 sm:mb-4">
-                    <TabsTrigger
-                      value="html"
-                      className="rounded-lg text-xs font-medium data-[state=active]:bg-white data-[state=active]:text-[#0071e3] data-[state=active]:shadow-[0_2px_8px_rgba(0,0,0,0.05)] sm:text-sm"
-                    >
-                      HTML
-                    </TabsTrigger>
-                    <TabsTrigger
-                      value="css"
-                      className="rounded-lg text-xs font-medium data-[state=active]:bg-white data-[state=active]:text-[#0071e3] data-[state=active]:shadow-[0_2px_8px_rgba(0,0,0,0.05)] sm:text-sm"
-                    >
-                      CSS
-                    </TabsTrigger>
-                    <TabsTrigger
-                      value="js"
-                      className="rounded-lg text-xs font-medium data-[state=active]:bg-white data-[state=active]:text-[#0071e3] data-[state=active]:shadow-[0_2px_8px_rgba(0,0,0,0.05)] sm:text-sm"
-                    >
-                      JavaScript
-                    </TabsTrigger>
-                  </TabsList>
-
-                  {Object.entries(architectureDoc).map(([key, value]) => (
-                    <TabsContent key={key} value={key} className="mt-0">
-                      <div className="relative">
-                        <div className="max-h-64 overflow-y-auto rounded-xl border border-[#e6e6e6] bg-[#fafafa] p-3 font-mono text-xs whitespace-pre-wrap text-[#1d1d1f] sm:max-h-80 sm:p-5 sm:text-sm">
-                          {value}
-                        </div>
-                        <motion.button
-                          onClick={() => handleCopyText(value, `arch-${key}`)}
-                          whileHover={{ scale: 1.05 }}
-                          whileTap={{ scale: 0.95 }}
-                          className="absolute top-3 right-3 rounded-full bg-white/90 p-1.5 backdrop-blur transition-colors hover:bg-[#f5f5f7] sm:p-2"
-                          title="复制代码"
-                        >
-                          {copiedText === `arch-${key}` ? (
-                            <span className="text-xs font-medium text-[#0071e3]">
-                              已复制!
-                            </span>
-                          ) : (
-                            <ClipboardIcon className="h-3.5 w-3.5 text-[#0071e3] sm:h-4 sm:w-4" />
-                          )}
-                        </motion.button>
-                      </div>
-                    </TabsContent>
-                  ))}
-                </Tabs>
-
-                <div className="mt-4 grid grid-cols-1 gap-2 sm:mt-6 sm:grid-cols-3 sm:gap-3">
-                  {(["html", "css", "js"] as FileType[]).map((fileType) => (
+                <div className="mt-4 grid grid-cols-1 gap-2 sm:mt-6 sm:grid-cols-2 sm:gap-3">
+                  {(["html", "js"] as FileType[]).map((fileType) => (
                     <motion.div
                       key={fileType}
                       whileHover={{ y: -2 }}
@@ -419,16 +392,16 @@ export const Agent = () => {
                     >
                       <Button
                         className={`w-full rounded-xl py-2 text-sm transition-all duration-200 sm:py-2.5 sm:text-base ${
-                          currentFile === fileType && isCodePending
+                          currentFile === fileType && isCodeLoading
                             ? "bg-[#e8f0fd] text-[#0071e3]"
                             : currentFile === fileType
                               ? "bg-[#0071e3] text-white hover:bg-[#0077ed]"
                               : "bg-[#f5f5f7] text-[#1d1d1f] hover:bg-[#ebebeb]"
                         }`}
                         onClick={() => handleGenerateCode(fileType)}
-                        disabled={isCodePending || isGeneratingAll}
+                        disabled={isCodeLoading || isGeneratingAll}
                       >
-                        {isCodePending && currentFile === fileType ? (
+                        {isCodeLoading && currentFile === fileType ? (
                           <span className="flex items-center justify-center">
                             <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin sm:mr-2 sm:h-4 sm:w-4" />
                             生成中...
@@ -447,7 +420,7 @@ export const Agent = () => {
                 <Button
                   className="mt-3 w-full rounded-xl bg-[#000000] py-2 text-sm text-white transition-colors hover:bg-[#1d1d1f] active:bg-[#333333] disabled:opacity-50 sm:mt-4 sm:py-2.5 sm:text-base"
                   onClick={handleGenerateAllCode}
-                  disabled={isCodePending || isGeneratingAll}
+                  disabled={isCodeLoading || isGeneratingAll}
                 >
                   {isGeneratingAll ? (
                     <span className="flex items-center justify-center">
@@ -466,9 +439,10 @@ export const Agent = () => {
               </motion.div>
             )}
           </AnimatePresence>
-
+          {/* {codeImplementation.html} */}
           <AnimatePresence>
-            {codeImplementation.html && (
+            {(codeImplementation.html ??
+              (codeCompletion && (isCodeLoading || isContinueCodeLoading))) && (
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -487,7 +461,6 @@ export const Agent = () => {
                     onClick={() =>
                       setCodeImplementation({
                         html: "",
-                        css: "",
                         js: "",
                       })
                     }
@@ -498,18 +471,12 @@ export const Agent = () => {
                 </div>
 
                 <Tabs defaultValue="html" className="w-full">
-                  <TabsList className="mb-3 grid grid-cols-3 gap-1 rounded-xl bg-[#f5f5f7] p-1 sm:mb-4">
+                  <TabsList className="mb-3 grid grid-cols-2 gap-1 rounded-xl bg-[#f5f5f7] p-1 sm:mb-4">
                     <TabsTrigger
                       value="html"
                       className="rounded-lg text-xs font-medium data-[state=active]:bg-white data-[state=active]:text-[#0071e3] data-[state=active]:shadow-[0_2px_8px_rgba(0,0,0,0.05)] sm:text-sm"
                     >
                       HTML
-                    </TabsTrigger>
-                    <TabsTrigger
-                      value="css"
-                      className="rounded-lg text-xs font-medium data-[state=active]:bg-white data-[state=active]:text-[#0071e3] data-[state=active]:shadow-[0_2px_8px_rgba(0,0,0,0.05)] sm:text-sm"
-                    >
-                      CSS
                     </TabsTrigger>
                     <TabsTrigger
                       value="js"
@@ -523,7 +490,10 @@ export const Agent = () => {
                     <TabsContent key={key} value={key} className="mt-0">
                       <div className="relative">
                         <div className="max-h-72 overflow-y-auto rounded-xl border border-[#e6e6e6] bg-[#fafafa] p-3 font-mono text-xs whitespace-pre-wrap text-[#1d1d1f] sm:max-h-96 sm:p-5 sm:text-sm">
-                          {value}
+                          {currentFile === key &&
+                          (isCodeLoading || isContinueCodeLoading)
+                            ? codeCompletion + continueCodeCompletion
+                            : value}
                         </div>
                         <motion.button
                           onClick={() => handleCopyText(value, `code-${key}`)}
@@ -557,33 +527,32 @@ export const Agent = () => {
             )}
           </AnimatePresence>
 
+          {/* && codeImplementation.js  */}
           <AnimatePresence>
-            {codeImplementation.html &&
-              codeImplementation.css &&
-              codeImplementation.js && (
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.3 }}
-                  className="mt-3 rounded-2xl border border-[#e6e6e6] bg-white p-4 shadow-[0_4px_12px_rgba(0,0,0,0.04)] sm:mt-6 sm:p-6"
-                >
-                  <div className="mb-3 flex items-center space-x-2 sm:mb-4">
-                    <EyeIcon className="h-4 w-4 text-[#0071e3] sm:h-5 sm:w-5" />
-                    <h3 className="text-base font-medium text-[#1d1d1f] sm:text-lg">
-                      代码预览
-                    </h3>
-                  </div>
-                  <div className="overflow-hidden rounded-xl border border-[#e6e6e6] bg-white">
-                    <CodePreview
-                      html={codeImplementation.html ?? ""}
-                      css={codeImplementation.css ?? ""}
-                      javascript={codeImplementation.js ?? ""}
-                      height="350px"
-                      isEmbedded={true}
-                    />
-                  </div>
-                </motion.div>
-              )}
+            {codeImplementation.html && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.3 }}
+                className="mt-3 rounded-2xl border border-[#e6e6e6] bg-white p-4 shadow-[0_4px_12px_rgba(0,0,0,0.04)] sm:mt-6 sm:p-6"
+              >
+                <div className="mb-3 flex items-center space-x-2 sm:mb-4">
+                  <EyeIcon className="h-4 w-4 text-[#0071e3] sm:h-5 sm:w-5" />
+                  <h3 className="text-base font-medium text-[#1d1d1f] sm:text-lg">
+                    代码预览
+                  </h3>
+                </div>
+                <div className="overflow-hidden rounded-xl border border-[#e6e6e6] bg-white">
+                  <CodePreview
+                    html={codeImplementation.html ?? ""}
+                    css=""
+                    javascript={codeImplementation.js ?? ""}
+                    height="350px"
+                    isEmbedded={true}
+                  />
+                </div>
+              </motion.div>
+            )}
           </AnimatePresence>
         </CardContent>
       </Card>

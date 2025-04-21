@@ -1,10 +1,16 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { createDeepSeek } from "@ai-sdk/deepseek";
+import { streamText } from "ai";
 // import { create } from "@ai-sdk/google";
 import { type z } from "zod";
 import { generateText, generateObject } from "ai";
 
 const openai = createOpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+  baseURL: process.env.OPENAI_BASE_URL,
+});
+
+const streamOpenai = createOpenAI({
   apiKey: process.env.OPENAI_API_KEY,
   baseURL: process.env.OPENAI_BASE_URL,
 });
@@ -71,6 +77,14 @@ export abstract class AIAgent {
       prompt: string,
       schema: z.ZodSchema,
     ) => Promise<Record<string, string>>;
+    streamText: (
+      prompt: string,
+      options?: {
+        temperature?: number;
+        maxTokens?: number;
+        stopSequences?: string[];
+      },
+    ) => ReturnType<typeof streamText>;
   };
 
   protected tools: Map<string, (args: unknown) => Promise<unknown>>;
@@ -101,6 +115,13 @@ export abstract class AIAgent {
           const response = await generateText({
             model: baseModel,
             prompt,
+            messages: [
+              {
+                role: "system",
+                content: this.role,
+              },
+            ],
+            temperature: options.temperature ?? 0.6,
           });
           const endTime = Date.now();
           console.log(`LLM调用时间: ${endTime - startTime}ms`);
@@ -113,12 +134,23 @@ export abstract class AIAgent {
           );
         }
       },
+
+      streamText: (prompt: string, options = {}) => {
+        const result = streamText({
+          model: baseModel,
+          prompt,
+          ...options,
+          experimental_continueSteps: true,
+        });
+        return result;
+      },
       generateObject: async (prompt: string, schema: z.ZodSchema) => {
         try {
           const result = await generateObject({
             model: baseModelWithObject,
             schema,
 
+            temperature: 1,
             prompt,
           });
           // console.log(JSON.stringify(result.object, null, 2));
@@ -209,6 +241,10 @@ export abstract class AIAgent {
   abstract performTask(
     input: string | Record<string, unknown>,
   ): Promise<string | Record<string, unknown>>;
+
+  abstract performTaskStream(
+    input: string | Record<string, unknown>,
+  ): ReturnType<typeof streamText>;
 
   /**
    * 与LLM交互的通用方法

@@ -30,6 +30,7 @@ export function CodePreview({
   const [isOpen, setIsOpen] = useState(isEmbedded);
   const [isLoading, setIsLoading] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   // 将 HTML、CSS 和 JavaScript 组合成完整的文档
   const srcDoc = useMemo(() => {
@@ -98,6 +99,12 @@ export function CodePreview({
     }
   }, [isOpen, isEmbedded, html, css, javascript]);
 
+  // 刷新预览函数
+  const handleRefresh = () => {
+    setIsLoading(true);
+    setRefreshKey((prev) => prev + 1);
+  };
+
   // 全屏模式的预览
   if (isFullscreen) {
     return (
@@ -124,9 +131,10 @@ export function CodePreview({
             </div>
           )}
           <iframe
+            key={`fullscreen-${refreshKey}`}
             title="代码全屏预览"
             srcDoc={srcDoc}
-            sandbox="allow-scripts allow-modals"
+            sandbox="allow-scripts allow-modals allow-same-origin"
             className="h-full w-full border-none"
             onLoad={() => setIsLoading(false)}
           />
@@ -166,7 +174,7 @@ export function CodePreview({
               </svg>
             </button>
             <button
-              onClick={() => setIsLoading(true)}
+              onClick={handleRefresh}
               className="group flex h-6 w-6 items-center justify-center rounded-lg bg-[#f5f5f7] transition-all hover:bg-[#e6e6e6] sm:h-7 sm:w-7"
               title="刷新预览"
             >
@@ -197,6 +205,7 @@ export function CodePreview({
             </div>
           )}
           <iframe
+            key={`embedded-${refreshKey}`}
             title="代码预览"
             srcDoc={srcDoc}
             sandbox="allow-scripts allow-modals"
@@ -344,6 +353,7 @@ export function CodePreview({
                 </AnimatePresence>
 
                 <iframe
+                  key={`modal-${refreshKey}`}
                   title="代码预览"
                   srcDoc={srcDoc}
                   sandbox="allow-scripts allow-modals"

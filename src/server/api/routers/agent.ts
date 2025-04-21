@@ -46,7 +46,7 @@ export const agentRouter = createTRPCRouter({
         requirement: z.string(),
         architectureDoc: z.string(),
         history: z.record(z.string()),
-        targetFile: z.enum(["html", "css", "js"]),
+        targetFile: z.enum(["html", "js"]),
       }),
     )
     .mutation(async ({ ctx, input }) => {
