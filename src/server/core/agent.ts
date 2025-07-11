@@ -102,8 +102,13 @@ export abstract class AIAgent {
     this.memory = new Map();
     this.conversationHistory = [];
     this.status = "idle";
-    this.techStack =
-      "html,css,javascript,tailwindcss,通过cdn方式导入<script src='https://cdn.tailwindcss.com'></script>不使用其他外部资源";
+    // this.techStack = "";
+    this.techStack = `
+        固定技术栈：html、css、javascript、tailwindcss。
+        可选技术栈：vue、canvas。通过cdn方式导入tailwindcss和vue
+        <script src='https://cdn.tailwindcss.com'></script>
+        <script src='https://unpkg.com/vue@3/dist/vue.global.js'></script>
+    `;
 
     // 初始化模拟的大语言模型接口
     this.llm = {
@@ -112,15 +117,16 @@ export abstract class AIAgent {
         // 并处理options中的参数
         const startTime = Date.now();
         try {
+          console.log("prompt", prompt);
           const response = await generateText({
             model: baseModel,
             prompt,
-            messages: [
-              {
-                role: "system",
-                content: this.role,
-              },
-            ],
+            // messages: [
+            //   {
+            //     role: "system",
+            //     content: this.role,
+            //   },
+            // ],
             temperature: options.temperature ?? 0.6,
           });
           const endTime = Date.now();
@@ -136,16 +142,35 @@ export abstract class AIAgent {
       },
 
       streamText: (prompt: string, options = {}) => {
+        console.log("streamText", prompt);
+        // console.log("prompt", prompt, "options", options);
+        // this.llm
+        //   .generate(prompt, options)
+        //   .then((value) => {
+        //     console.log("value", value);
+        //   })
+        //   .catch((error) => {
+        //     console.error("LLM调用失败:", error);
+        //     throw new Error(
+        //       `LLM调用失败: ${error instanceof Error ? error.message : String(error)}`,
+        //     );
+        //   });
+        // console.log("testResult", testResult);
         const result = streamText({
+          // stream: true,
           model: baseModel,
           prompt,
           ...options,
-          experimental_continueSteps: true,
+
+          maxTokens: 16000,
+          // experimental_continueSteps: true,
         });
+        console.log("reault");
         return result;
       },
       generateObject: async (prompt: string, schema: z.ZodSchema) => {
         try {
+          console.log("generateObject");
           const result = await generateObject({
             model: baseModelWithObject,
             schema,

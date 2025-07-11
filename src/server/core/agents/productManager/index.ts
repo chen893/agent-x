@@ -17,8 +17,12 @@ export class ProductManagerAgent extends AIAgent {
    * @param input 任务输入
    * @returns 任务输出
    */
-  performTaskStream(input: string): ReturnType<typeof streamText> {
-    return this.createPRD(input);
+  performTaskStream(
+    input: string,
+    feedback = "",
+    originalPRD?: string,
+  ): ReturnType<typeof streamText> {
+    return this.createPRD(input, feedback, originalPRD);
   }
   performTask(input: string): Promise<string> {
     // return this.createPRD(input);
@@ -26,91 +30,6 @@ export class ProductManagerAgent extends AIAgent {
   }
 
   /**
-   * 需求分析
-   * @param input 需求相关的输入
-   * @returns 需求分析结果
-   */
-  private async analyzeRequirements(input: string): Promise<string> {
-    const prompt = `
-      作为产品经理，请分析以下需求：
-      
-      ${input}
-      
-      限制使用的技术栈：
-      ${this.techStack}
-
-      1. 产品概述
-      2. 目标用户
-      3. 用户痛点及解决方案
-      4. 核心功能详细说明
-      5. 用户流程图
-      6. 界面原型描述
-      请提供详细的需求分析，包括：
-      1. 核心问题和目标
-      2. 解决方案概述
-      3. 潜在风险
-    `;
-
-    return this.queryLLM(prompt);
-  }
-
-  /**
-   * 创建用户故事
-   * @param input 与用户故事相关的输入
-   * @returns 用户故事列表
-   */
-  private async createUserStories(input: string): Promise<string> {
-    const prompt = `
-      作为产品经理，请根据以下信息创建用户故事：
-      
-      ${input}
-      
-      请按照以下格式提供至少5个用户故事：
-      1. 作为[用户角色]，我希望能够[功能]，以便[价值/目的]
-      2. ...
-    `;
-
-    return this.queryLLM(prompt);
-  }
-
-  /**
-   * 创建产品路线图
-   * @param input 与产品规划相关的输入
-   * @returns 产品路线图
-   */
-  private async createProductRoadmap(input: string): Promise<string> {
-    const prompt = `
-      作为产品经理，请根据以下信息创建产品路线图：
-      
-      ${input}
-      
-      请提供分阶段的产品路线图，包括：
-      1. 短期目标（1-3个月）
-      2. 中期目标（3-6个月）
-      3. 长期目标（6-12个月）
-      4. 每个阶段的关键功能和里程碑
-    `;
-
-    return this.queryLLM(prompt);
-  }
-
-  /**
-   * 功能优先级排序
-   * @param input 与功能相关的输入
-   * @returns 优先级排序结果
-   */
-  private async prioritizeFeatures(input: string): Promise<string> {
-    const prompt = `
-      作为产品经理，请对以下功能进行优先级排序：
-      
-      ${input}
-      
-      请使用RICE评分法（Reach影响范围、Impact影响程度、Confidence信心度、Effort工作量）
-      对每个功能进行评分，并提供最终的优先级排序和理由。
-    `;
-
-    return this.queryLLM(prompt);
-  }
 
   /**
    * 创建产品需求文档(PRD)
@@ -119,7 +38,12 @@ export class ProductManagerAgent extends AIAgent {
    * @returns PRD文档内容
    */
   // productName: string,
-  createPRD(description: string): ReturnType<typeof streamText> {
+  // 反馈后重新生成PRD
+  createPRD(
+    description: string,
+    feedback?: string,
+    originalPRD?: string,
+  ): ReturnType<typeof streamText> {
     //       // 产品名称：${productName}
 
     // const prompt = `
@@ -138,7 +62,47 @@ export class ProductManagerAgent extends AIAgent {
     //   8. 成功指标
     // `;
 
-    console.log("description", description);
+    // 反馈改进专用prompt
+    const feedbackPrompt = `
+角色定位
+你是一位精于优化产品需求的分析师。你的任务是根据用户反馈，对已有PRD进行改进和调整，确保产品设计更好地满足用户需求。
+
+工作流程
+1. 仔细分析原始需求和用户反馈
+2. 判断反馈对PRD各部分的影响
+3. 根据反馈修改原PRD中需要调整的内容
+4. 输出一份完整的新PRD
+
+注意重点
+✅ 保持PRD结构的完整性
+✅ 只修改受用户反馈影响的部分
+✅ 确保修改后的PRD更符合用户期望
+✅ 保持简洁优雅的设计原则
+✅ 确保页面美观，符合高级ui设计师审美
+
+原始需求：
+${description}
+
+用户反馈：
+${feedback}
+
+原始PRD内容：
+${originalPRD}
+
+🛠 技术栈（如有）：
+${this.techStack}
+
+请基于以上信息，输出一份优化后的PRD！
+（仅输出优化后的完整PRD，无需额外解释）
+`;
+
+    // 如果有反馈和原始PRD，使用feedbackPrompt
+    if (feedback && originalPRD) {
+      console.log("feedbackPrompt", feedbackPrompt);
+      return this.llm.streamText(feedbackPrompt);
+    }
+
+    // 否则使用原始prompt
     const prompt = `
 
 角色定位
@@ -164,7 +128,7 @@ export class ProductManagerAgent extends AIAgent {
 
 3. 核心用户场景（Key User Story）
 🔹 描述1-2个最关键的场景，格式：
-“作为 [用户角色]，我想要 [做什么]，以便 [获得什么价值]”
+"作为 [用户角色]，我想要 [做什么]，以便 [获得什么价值]"
 （例：作为创作者，我想要快速输入并保存灵感，以便后续整理成完整内容）
 
 4. 功能设计（Features）
@@ -178,19 +142,26 @@ export class ProductManagerAgent extends AIAgent {
 6. 技术考量（Tech Considerations，可选）
 🔹 如果用户提供了技术栈，可简要说明如何利用现有技术实现
 
+
 📌 用户需求输入：
 ${description}
 
-🛠 技术栈（如有）：
-${this.techStack}
+
+${this.techStack ? `🛠 技术栈：${this.techStack}` : ""}
+
+${
+  feedback
+    ? `
+🔍 用户反馈：
+${feedback}
+`
+    : ""
+}
 
 请基于用户需求，输出一份简洁优雅的PRD！ 
 （仅输出PRD，无需额外解释，不要输出任何解释）
-
-
 `;
 
-    // return this.queryLLM(prompt);
     return this.llm.streamText(prompt);
   }
 

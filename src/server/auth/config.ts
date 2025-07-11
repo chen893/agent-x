@@ -1,6 +1,7 @@
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import { type DefaultSession, type NextAuthConfig } from "next-auth";
 import DiscordProvider from "next-auth/providers/discord";
+import GitHubProvider from "next-auth/providers/github";
 
 import { db } from "@/server/db";
 
@@ -32,7 +33,11 @@ declare module "next-auth" {
  */
 export const authConfig = {
   providers: [
-    DiscordProvider,
+    // DiscordProvider,
+    GitHubProvider({
+      clientId: process.env.AUTH_GITHUB_ID,
+      clientSecret: process.env.AUTH_GITHUB_SECRET,
+    }),
     /**
      * ...add more providers here.
      *
@@ -52,5 +57,11 @@ export const authConfig = {
         id: user.id,
       },
     }),
+  },
+  // Apple风格自定义页面
+  pages: {
+    signIn: "/signin",
+    signOut: "/signout",
+    error: "/auth-error",
   },
 } satisfies NextAuthConfig;

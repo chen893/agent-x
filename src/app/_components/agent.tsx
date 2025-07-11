@@ -1,8 +1,5 @@
 "use client";
-import { api } from "@/trpc/react";
-import { useState, useRef } from "react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { useRef, useEffect } from "react";
 import {
   Card,
   CardContent,
@@ -10,252 +7,266 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import * as FileSaver from "file-saver";
-import JSZip from "jszip";
-import {
-  ClipboardIcon,
-  ArrowDownTrayIcon,
-  ArrowPathIcon,
-  CodeBracketIcon,
-  DocumentTextIcon,
-  PlayIcon,
-  EyeIcon,
-} from "@heroicons/react/24/outline";
-
-import {
-  containsExactlyOneHtmlBlock,
-  extractFencedCodeBlocks,
-  fixTruncatedHtmlBlock,
-} from "@/lib/utils";
-import { useCompletion } from "@ai-sdk/react";
-
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Loader2 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { CodePreview } from "@/components/CodePreview";
 import { motion, AnimatePresence } from "framer-motion";
-
-type FileType = "html" | "js";
+import { useAgentStore } from "@/store/agent";
+import { useAgentCompletion } from "@/hooks/useAgentCompletion";
+import { RequirementInput } from "./RequirementInput";
+import { DocumentViewer } from "./DocumentViewer";
+import { CodeImplementation } from "./CodeImplementation";
+import { CodePreviewSection } from "./CodePreviewSection";
+import type { FileType } from "./types";
+import { useSession } from "next-auth/react";
+import { constructNewFileContentV2 } from "@/lib/diff";
+// import { Button } from "@/components/ui/button";
 
 export const Agent = () => {
-  const [requirement, setRequirement] = useState("");
-  const [codeImplementation, setCodeImplementation] = useState<
-    Record<string, string>
-  >({
-    html: "",
-    js: "",
-  });
-
+  // 从状态库获取状态
   const {
-    completion: document,
-    complete,
-    isLoading: isPending,
-    error,
-  } = useCompletion({
-    api: "/api/agents/product-manager",
-    onFinish: () => {
-      setActiveStep(2);
-    },
-  });
+    requirement,
+    setRequirement,
+    document,
+    codeImplementation,
+    currentFile,
+    copiedText,
+    activeStep,
+    feedback,
+    isRegeneratingDocument,
+    isReviewMode,
+    issueDescription,
+    isFixingCode,
+    fixedCode,
+    isApplyingFix,
+    setFeedback,
+    setIsReviewMode,
+    setIssueDescription,
+    setIsFixingCode,
+    setFixedCode,
+    setIsApplyingFix,
+    handleCopyText,
+    handleDownload,
+    parseFixBlocks,
+    clearCode,
+    handleCodeReview,
+    handleCancelFix,
+    updateCodeForFile,
+    isLoadingCurrentProject,
+  } = useAgentStore();
 
-  // const
+  // 会话状态
+  const { data: session } = useSession();
 
-  const [currentFile, setCurrentFile] = useState<FileType>("html");
-  const activeFileRef = useRef<FileType>("html");
-  const [copiedText, setCopiedText] = useState<string | null>(null);
-  const [activeStep, setActiveStep] = useState<number>(1);
-  const [isGeneratingAll, setIsGeneratingAll] = useState<boolean>(false);
-  const [currentGeneratingFile, setCurrentGeneratingFile] =
-    useState<FileType | null>(null);
-
-  // 使用 useCompletion 代替 api.agent.createSoftwareDeveloper
+  // 使用自定义hook获取API交互逻辑
   const {
-    completion: continueCodeCompletion,
-    complete: completeContinueCode,
-    isLoading: isContinueCodeLoading,
-  } = useCompletion({
-    api: "/api/agents/software-developer/continue-code",
-    onFinish: (prompt, completion) => {
-      console.log("continueCodeCompletion", completion);
+    documentCompletion,
+    isDocumentLoading,
+    documentError: error,
+    handleGenerateDocument,
+    isCodeLoading,
+    isContinueCodeLoading,
+    handleGenerateCode,
+    handleFixCode,
+    codeCompletion,
+    setCodeCompletion,
+    continueCodeCompletion,
+    setContinueCodeCompletion,
+    activeFileRef,
+    codeFixCompletion,
+    // saveProjectData,
+    currentProjectId,
+    autoSaveStatus,
+  } = useAgentCompletion();
 
-      const getNewCode = (sourceCode: string) => {
-        return (
-          sourceCode?.split("\n")?.slice(0, -5)?.join("\n") +
-          extractFencedCodeBlocks(completion)?.[0]?.code
-        );
-      };
-      setCodeImplementation((prev) => ({
-        ...prev,
-        [activeFileRef.current]: getNewCode(
-          prev[activeFileRef.current ?? "html"] ?? "",
-        ),
-      }));
-    },
-  });
+  const clearAllCode = () => {
+    clearCode();
+    setCodeCompletion("");
+    setContinueCodeCompletion("");
+  };
 
-  const {
-    completion: codeCompletion,
-    complete: completeCode,
-    isLoading: isCodeLoading,
-  } = useCompletion({
-    api: "/api/agents/software-developer",
-    onFinish: (prompt, completion) => {
-      // 使用ref中存储的当前活动文件类型
-      const fileType = activeFileRef.current;
-      console.log("activeFileRef.current", fileType);
-      console.log("codeCompletion", completion);
+  // 添加引用来获取滚动容器
+  const documentContainerRef = useRef<HTMLDivElement>(null);
+  const codeContainerRef = useRef<HTMLDivElement>(null);
 
-      console.log(
-        "extractFencedCodeBlocks",
-        extractFencedCodeBlocks(completion),
-      );
+  // 添加自动滚动效果，确保文档内容始终滚动到最新位置
+  useEffect(() => {
+    if (documentContainerRef.current && document) {
+      const container = documentContainerRef.current;
+      container.scrollTop = container.scrollHeight;
+    }
+  }, [document]);
 
-      if (!containsExactlyOneHtmlBlock(completion)) {
-        const sourceCode = fixTruncatedHtmlBlock(completion).html;
-        completeContinueCode("", {
-          body: {
-            requirement: document,
-            architectureDoc: "{}",
-            sourceCode: sourceCode,
-            targetFile: fileType,
-          },
-        }).catch((error) => {
-          console.error("续写代码失败:", error);
-        });
-        // 将生成的代码设置到相应的文件
-        setCodeImplementation((prev) => ({
-          ...prev,
-          [fileType]: sourceCode ?? "",
-        }));
-      } else {
-        // 将生成的代码设置到相应的文件
-        setCodeImplementation((prev) => ({
-          ...prev,
-          [fileType]: extractFencedCodeBlocks(completion)?.[0]?.code ?? "",
-        }));
-      }
-
-      // 如果是在顺序生成过程中，处理下一个
-      if (isGeneratingAll && currentGeneratingFile) {
-        setCurrentGeneratingFile(null);
-      }
-    },
-  });
-
-  // const { mutate, isPending } = api.agent.generateRequirementDoc.useMutation({
-  //   onSuccess: (data) => {
-  //     setDocument(data);
-  //     setActiveStep(2);
-  //   },
-  // });
-
-  // 用于存储当前生成代码的Promise resolve函数
-  // let resolveGeneratePromise: (() => void) | null = null;
+  // 添加自动滚动效果，确保代码内容始终滚动到最新位置
+  useEffect(() => {
+    if (
+      codeContainerRef.current &&
+      currentFile === activeFileRef.current &&
+      (isCodeLoading ||
+        isContinueCodeLoading ||
+        codeImplementation[currentFile])
+    ) {
+      const container = codeContainerRef.current;
+      container.scrollTop = container.scrollHeight;
+    }
+  }, [
+    codeImplementation,
+    codeCompletion,
+    continueCodeCompletion,
+    currentFile,
+    isCodeLoading,
+    isContinueCodeLoading,
+    activeFileRef,
+  ]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setRequirement(e.target.value);
   };
 
-  const handleGenerateCode = async (fileType: FileType) => {
-    console.log("handleGenerateCode", fileType);
-    setCurrentFile(fileType);
-    activeFileRef.current = fileType;
-    setCurrentGeneratingFile(fileType);
-    const otherCode: Record<string, string> = {};
-    Object.entries(codeImplementation).forEach(([key, value]) => {
-      if (key !== fileType) {
-        otherCode[key] = value || "";
-      } else {
-        otherCode[key] = "";
+  // 应用修复
+  const handleApplyFix = async () => {
+    if (!fixedCode) return;
+
+    setIsApplyingFix(true);
+
+    try {
+      // 解析和应用所有的修复块
+      console.log("fixCode", fixedCode);
+      // console.log("codeImplementation", codeImplementation.html);
+      // console.log('')
+
+      const blocks = fixedCode
+        .split("------- SEARCH\n")
+        .filter((item) => item !== "")
+        .map((item) => "------- SEARCH\n" + item);
+
+      let result = codeImplementation.html ?? "";
+
+      for (const block of blocks) {
+        result = await constructNewFileContentV2(block, result, true);
       }
-    });
 
-    // 使用 completeCode 代替 generateCode
-    await completeCode("", {
-      body: {
-        requirement: document,
-        architectureDoc: "{}",
-        history: otherCode,
-        targetFile: fileType,
-      },
-    });
-  };
-
-  const handleCopyText = (text: string, id: string) => {
-    try {
-      void navigator.clipboard
-        .writeText(text)
-        .then(() => {
-          setCopiedText(id);
-          setTimeout(() => setCopiedText(null), 2000);
-        })
-        .catch((error) => {
-          console.error("复制失败:", error);
-        });
-    } catch (error) {
-      console.error("复制操作异常:", error);
-    }
-  };
-
-  const handleDownload = async () => {
-    try {
-      const zip = new JSZip();
-
-      // 添加文件到zip
-      Object.entries(codeImplementation).forEach(([key, value]) => {
-        const extension = key === "html" ? ".html" : ".js";
-        zip.file(`index${extension}`, value);
-      });
-
-      // 生成zip文件并下载
-      const content = await zip.generateAsync({ type: "blob" });
-
-      // 使用 FileSaver 保存文件
-      FileSaver.saveAs(content, "project-files.zip");
-    } catch (error) {
-      console.error("下载文件失败:", error);
-    }
-  };
-
-  // 顺序生成单个文件类型的代码
-  const generateCodeAsync = async (fileType: FileType): Promise<void> => {
-    setCurrentFile(fileType);
-    activeFileRef.current = fileType;
-    setCurrentGeneratingFile(fileType);
-
-    const otherCode: Record<string, string> = {};
-    Object.entries(codeImplementation).forEach(([key, value]) => {
-      if (key !== fileType) {
-        otherCode[key] = value || "";
-      } else {
-        otherCode[key] = "";
+      let updatedCode = result ?? codeImplementation.html ?? "";
+      // Check if result is an object with replacements (new format)
+      if (
+        typeof result === "object" &&
+        result !== null &&
+        "replacements" in result
+      ) {
+        updatedCode = (result as { replacements: string })?.replacements ?? "";
       }
-    });
+      // const fixes = parseFixBlocks(fixedCode);
+      // console.log("fixes", fixes);
 
-    // 使用 completeCode 代替 generateCode
-    await completeCode("", {
-      body: {
-        requirement: document,
-        architectureDoc: "{}",
-        history: otherCode,
-        targetFile: fileType,
-      },
-    });
-  };
+      // if (fixes.length === 0) {
+      //   console.warn("未找到有效的修复");
+      //   setIsApplyingFix(false);
+      //   return;
+      // }
 
-  const handleGenerateAllCode = async () => {
-    setIsGeneratingAll(true);
-    try {
-      // 按顺序生成HTML和JS
-      await generateCodeAsync("html");
-      await generateCodeAsync("js");
+      // let updatedCode = codeImplementation.html ?? "";
+
+      // // 改进替换逻辑，使用更精确的替换
+      // for (const fix of fixes) {
+      //   // 使用正则表达式进行精确替换，escape特殊字符
+      //   const searchRegex = new RegExp(
+      //     fix.search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+      //     "g",
+      //   );
+      //   updatedCode = updatedCode.replace(searchRegex, fix.replace);
+      // }
+
+      // 更新代码
+      updateCodeForFile("html", updatedCode);
+
+      // 重置修复状态
+      setFixedCode(null);
+      setIsReviewMode(false);
+      setIssueDescription("");
     } catch (error) {
-      console.error("生成代码失败:", error);
+      console.error("应用修复失败:", error);
     } finally {
-      setIsGeneratingAll(false);
+      setIsApplyingFix(false);
+      setIsFixingCode(false);
     }
   };
+
+  // 正在生成的代码，结合了codeCompletion和continueCodeCompletion
+  const currentCode = (() => {
+    if (!continueCodeCompletion) {
+      // 防止codeCompletion为空或不包含```html
+      const parts = codeCompletion?.split("```html") ?? [];
+      return parts.length > 1 ? parts[1] : (codeCompletion ?? "");
+    }
+
+    // 防止解析错误并确保安全的字符串拼接
+    const codeParts =
+      codeCompletion?.split("\n")?.slice(0, -5)?.join("\n") ?? "";
+    const continueParts = continueCodeCompletion?.split("```html") ?? [];
+    const continueCode =
+      continueParts.length > 1
+        ? continueParts[1]
+        : (continueCodeCompletion ?? "");
+
+    return codeParts + continueCode;
+  })();
+
+  // 函数包装器，处理类型兼容性问题
+  const handleGenerateCodeWrapper = (type: string) => {
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+    handleGenerateCode(type as FileType);
+  };
+
+  const handleCopyTextWrapper = (
+    text: string | null | undefined,
+    type: string,
+  ) => {
+    handleCopyText(text ?? "", type);
+  };
+
+  // 自动保存状态提示
+  const renderAutoSaveStatus = () => {
+    if (!session?.user) return null;
+
+    switch (autoSaveStatus) {
+      case "saving":
+        return <span className="ml-1 text-[#0071e3]">（正在保存...）</span>;
+      case "success":
+        return <span className="ml-1 text-green-600">（保存成功）</span>;
+      case "error":
+        return (
+          <span className="ml-1 text-red-500">（保存失败，将自动重试）</span>
+        );
+      default:
+        return <span className="ml-1 text-[#0071e3]">（已启用自动保存）</span>;
+    }
+  };
+
+  // 如果正在加载当前项目，显示加载状态
+  if (isLoadingCurrentProject) {
+    return (
+      <div className="relative min-h-screen w-full bg-gradient-to-br from-[#f5f5f7] to-[#fbfbfd] px-4 py-6 sm:px-6 sm:py-8 md:px-8 md:py-10">
+        {/* 背景装饰元素 */}
+        <div className="pointer-events-none absolute top-[10%] left-[5%] h-48 w-48 rounded-full bg-[#0071e3]/5 blur-3xl"></div>
+        <div className="pointer-events-none absolute right-[10%] bottom-[15%] h-60 w-60 rounded-full bg-[#0071e3]/5 blur-3xl"></div>
+
+        <Card className="mx-auto w-full overflow-hidden rounded-2xl border-none bg-white shadow-[0_0_20px_rgba(0,0,0,0.08)] sm:my-8 md:max-w-5xl lg:max-w-6xl">
+          <CardContent className="flex min-h-[400px] items-center justify-center p-8">
+            <div className="text-center">
+              <motion.div
+                animate={{ rotate: 360 }}
+                transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+                className="mx-auto mb-4 h-8 w-8 rounded-full border-2 border-[#0071e3] border-t-transparent"
+              />
+              <h3 className="mb-2 text-lg font-medium text-[#1d1d1f]">
+                正在加载项目
+              </h3>
+              <p className="text-sm text-[#86868b]">
+                请稍候，正在初始化您的项目数据...
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="relative min-h-screen w-full bg-gradient-to-br from-[#f5f5f7] to-[#fbfbfd] px-4 py-6 sm:px-6 sm:py-8 md:px-8 md:py-10">
@@ -271,10 +282,12 @@ export const Agent = () => {
 
           <CardDescription className="text-center text-sm text-[#86868b] sm:text-base">
             输入您的项目需求，我们将为您生成详细的需求文档、架构设计和代码实现
+            {renderAutoSaveStatus()}
           </CardDescription>
         </CardHeader>
 
         <CardContent className="space-y-6 p-4 sm:space-y-8 sm:p-6 md:p-8">
+          {/* 步骤进度条 */}
           <div className="mb-6 flex items-center space-x-2 px-2 sm:mb-8 sm:space-x-4">
             <motion.div
               initial={{ scale: 0.9, opacity: 0.8 }}
@@ -300,259 +313,78 @@ export const Agent = () => {
               2
             </motion.div>
           </div>
-          <div className="space-y-3 sm:space-y-4">
-            isCodeLoading：{isCodeLoading ? "true" : "false"}
-            \n error: {error?.message}
-            \n currentFile：{currentFile}
-            \n code: {codeCompletion}
-          </div>
-          <div className="space-y-3 sm:space-y-4">
-            <div className="flex items-center space-x-2">
-              <DocumentTextIcon className="h-4 w-4 text-[#0071e3] sm:h-5 sm:w-5" />
-              <label
-                htmlFor="requirement"
-                className="text-sm font-medium text-[#1d1d1f] sm:text-base"
-              >
-                项目需求
-              </label>
-            </div>
-            <div className="flex flex-col space-y-3 sm:flex-row sm:space-y-0 sm:space-x-3">
-              <Input
-                id="requirement"
-                type="text"
-                value={requirement}
-                onChange={handleChange}
-                placeholder="例如：开发一个在线订餐系统"
-                className="h-10 flex-1 rounded-xl border border-[#d2d2d7] bg-[#fafafa] px-4 text-sm text-[#1d1d1f] transition-all duration-200 focus:border-[#0071e3] focus:bg-white focus:ring-0 focus:ring-offset-0 focus:outline-none sm:h-12 sm:text-base"
+
+          {/* 需求输入部分 */}
+          <RequirementInput
+            requirement={requirement}
+            isDocumentLoading={isDocumentLoading}
+            handleChange={handleChange}
+            handleGenerateDocument={handleGenerateDocument}
+          />
+
+          {/* 需求文档部分 */}
+          <AnimatePresence>
+            {(document ?? (isDocumentLoading || documentCompletion)) && (
+              <DocumentViewer
+                document={document}
+                documentCompletion={documentCompletion}
+                isDocumentLoading={isDocumentLoading}
+                requirement={requirement}
+                feedback={feedback}
+                copiedText={copiedText ?? ""}
+                isRegeneratingDocument={isRegeneratingDocument}
+                isCodeLoading={isCodeLoading}
+                isContinueCodeLoading={isContinueCodeLoading}
+                documentContainerRef={documentContainerRef}
+                handleCopyText={handleCopyTextWrapper}
+                setFeedback={setFeedback}
+                handleGenerateDocument={handleGenerateDocument}
+                handleGenerateCode={handleGenerateCodeWrapper}
               />
-              <Button
-                className="h-10 shrink-0 rounded-xl bg-[#0071e3] px-4 text-sm text-white transition-colors hover:bg-[#0077ed] active:bg-[#006edb] disabled:opacity-50 sm:h-12 sm:px-6 sm:text-base"
-                onClick={() => complete(requirement)}
-                disabled={isPending || !requirement.trim()}
-              >
-                {isPending ? (
-                  <span className="flex items-center">
-                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin sm:mr-2 sm:h-4 sm:w-4" />
-                    生成中...
-                  </span>
-                ) : (
-                  <span className="flex items-center">
-                    <ArrowPathIcon className="mr-1.5 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
-                    生成需求文档
-                  </span>
-                )}
-              </Button>
-            </div>
-          </div>
-
-          <AnimatePresence>
-            {document && (
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.3 }}
-                className="rounded-2xl border border-[#e6e6e6] bg-white p-4 shadow-[0_4px_12px_rgba(0,0,0,0.04)] sm:p-6"
-              >
-                <div className="mb-3 flex items-center space-x-2 sm:mb-4">
-                  <DocumentTextIcon className="h-4 w-4 text-[#0071e3] sm:h-5 sm:w-5" />
-                  <h3 className="text-base font-medium text-[#1d1d1f] sm:text-lg">
-                    需求文档
-                  </h3>
-                </div>
-                <div className="relative">
-                  <div className="prose prose-blue max-h-64 overflow-y-auto rounded-xl border border-[#e6e6e6] bg-[#fafafa] p-3 text-sm text-[#1d1d1f] sm:max-h-80 sm:p-5 sm:text-base">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {/* {document} */}
-                      {document}
-                    </ReactMarkdown>
-                  </div>
-                  <motion.button
-                    onClick={() => handleCopyText(document, "document")}
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    className="absolute top-3 right-3 rounded-full bg-white/90 p-1.5 backdrop-blur transition-colors hover:bg-[#f5f5f7] sm:p-2"
-                    title="复制文档"
-                  >
-                    {copiedText === "document" ? (
-                      <span className="text-xs font-medium text-[#0071e3]">
-                        已复制!
-                      </span>
-                    ) : (
-                      <ClipboardIcon className="h-3.5 w-3.5 text-[#0071e3] sm:h-4 sm:w-4" />
-                    )}
-                  </motion.button>
-                </div>
-                <div className="mt-4 grid grid-cols-1 gap-2 sm:mt-6 sm:grid-cols-2 sm:gap-3">
-                  {(["html", "js"] as FileType[]).map((fileType) => (
-                    <motion.div
-                      key={fileType}
-                      whileHover={{ y: -2 }}
-                      whileTap={{ y: 1 }}
-                      className="w-full"
-                    >
-                      <Button
-                        className={`w-full rounded-xl py-2 text-sm transition-all duration-200 sm:py-2.5 sm:text-base ${
-                          currentFile === fileType && isCodeLoading
-                            ? "bg-[#e8f0fd] text-[#0071e3]"
-                            : currentFile === fileType
-                              ? "bg-[#0071e3] text-white hover:bg-[#0077ed]"
-                              : "bg-[#f5f5f7] text-[#1d1d1f] hover:bg-[#ebebeb]"
-                        }`}
-                        onClick={() => handleGenerateCode(fileType)}
-                        disabled={isCodeLoading || isGeneratingAll}
-                      >
-                        {isCodeLoading && currentFile === fileType ? (
-                          <span className="flex items-center justify-center">
-                            <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin sm:mr-2 sm:h-4 sm:w-4" />
-                            生成中...
-                          </span>
-                        ) : (
-                          <span className="flex items-center justify-center">
-                            <CodeBracketIcon className="mr-1.5 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
-                            生成{fileType.toUpperCase()}
-                          </span>
-                        )}
-                      </Button>
-                    </motion.div>
-                  ))}
-                </div>
-
-                <Button
-                  className="mt-3 w-full rounded-xl bg-[#000000] py-2 text-sm text-white transition-colors hover:bg-[#1d1d1f] active:bg-[#333333] disabled:opacity-50 sm:mt-4 sm:py-2.5 sm:text-base"
-                  onClick={handleGenerateAllCode}
-                  disabled={isCodeLoading || isGeneratingAll}
-                >
-                  {isGeneratingAll ? (
-                    <span className="flex items-center justify-center">
-                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin sm:mr-2 sm:h-4 sm:w-4" />
-                      {currentGeneratingFile
-                        ? `正在生成${currentGeneratingFile.toUpperCase()}...`
-                        : "生成中..."}
-                    </span>
-                  ) : (
-                    <span className="flex items-center justify-center">
-                      <PlayIcon className="mr-1.5 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
-                      按顺序生成所有代码
-                    </span>
-                  )}
-                </Button>
-              </motion.div>
-            )}
-          </AnimatePresence>
-          {/* {codeImplementation.html} */}
-          <AnimatePresence>
-            {(codeImplementation.html ??
-              (codeCompletion && (isCodeLoading || isContinueCodeLoading))) && (
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.3 }}
-                className="rounded-2xl border border-[#e6e6e6] bg-white p-4 shadow-[0_4px_12px_rgba(0,0,0,0.04)] sm:p-6"
-              >
-                <div className="mb-3 flex items-center justify-between sm:mb-4">
-                  <div className="flex items-center space-x-2">
-                    <CodeBracketIcon className="h-4 w-4 text-[#0071e3] sm:h-5 sm:w-5" />
-                    <h3 className="text-base font-medium text-[#1d1d1f] sm:text-lg">
-                      代码实现
-                    </h3>
-                  </div>
-                  <Button
-                    variant="outline"
-                    onClick={() =>
-                      setCodeImplementation({
-                        html: "",
-                        js: "",
-                      })
-                    }
-                    className="rounded-lg border-[#e6e6e6] px-2 py-1 text-xs text-[#86868b] hover:bg-[#f5f5f7] hover:text-[#1d1d1f] sm:px-3 sm:py-1 sm:text-sm"
-                  >
-                    清空代码
-                  </Button>
-                </div>
-
-                <Tabs defaultValue="html" className="w-full">
-                  <TabsList className="mb-3 grid grid-cols-2 gap-1 rounded-xl bg-[#f5f5f7] p-1 sm:mb-4">
-                    <TabsTrigger
-                      value="html"
-                      className="rounded-lg text-xs font-medium data-[state=active]:bg-white data-[state=active]:text-[#0071e3] data-[state=active]:shadow-[0_2px_8px_rgba(0,0,0,0.05)] sm:text-sm"
-                    >
-                      HTML
-                    </TabsTrigger>
-                    <TabsTrigger
-                      value="js"
-                      className="rounded-lg text-xs font-medium data-[state=active]:bg-white data-[state=active]:text-[#0071e3] data-[state=active]:shadow-[0_2px_8px_rgba(0,0,0,0.05)] sm:text-sm"
-                    >
-                      JavaScript
-                    </TabsTrigger>
-                  </TabsList>
-
-                  {Object.entries(codeImplementation).map(([key, value]) => (
-                    <TabsContent key={key} value={key} className="mt-0">
-                      <div className="relative">
-                        <div className="max-h-72 overflow-y-auto rounded-xl border border-[#e6e6e6] bg-[#fafafa] p-3 font-mono text-xs whitespace-pre-wrap text-[#1d1d1f] sm:max-h-96 sm:p-5 sm:text-sm">
-                          {currentFile === key &&
-                          (isCodeLoading || isContinueCodeLoading)
-                            ? codeCompletion + continueCodeCompletion
-                            : value}
-                        </div>
-                        <motion.button
-                          onClick={() => handleCopyText(value, `code-${key}`)}
-                          whileHover={{ scale: 1.05 }}
-                          whileTap={{ scale: 0.95 }}
-                          className="absolute top-3 right-3 rounded-full bg-white/90 p-1.5 backdrop-blur transition-colors hover:bg-[#f5f5f7] sm:p-2"
-                          title="复制代码"
-                        >
-                          {copiedText === `code-${key}` ? (
-                            <span className="text-xs font-medium text-[#0071e3]">
-                              已复制!
-                            </span>
-                          ) : (
-                            <ClipboardIcon className="h-3.5 w-3.5 text-[#0071e3] sm:h-4 sm:w-4" />
-                          )}
-                        </motion.button>
-                      </div>
-                    </TabsContent>
-                  ))}
-                </Tabs>
-
-                <Button
-                  className="mt-3 w-full rounded-xl bg-[#0071e3] py-2 text-sm text-white transition-colors hover:bg-[#0077ed] active:bg-[#006edb] sm:mt-4 sm:py-2.5 sm:text-base"
-                  onClick={handleDownload}
-                  variant="secondary"
-                >
-                  <ArrowDownTrayIcon className="mr-1.5 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
-                  下载所有文件
-                </Button>
-              </motion.div>
             )}
           </AnimatePresence>
 
-          {/* && codeImplementation.js  */}
+          {/* 代码实现部分 */}
           <AnimatePresence>
-            {codeImplementation.html && (
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.3 }}
-                className="mt-3 rounded-2xl border border-[#e6e6e6] bg-white p-4 shadow-[0_4px_12px_rgba(0,0,0,0.04)] sm:mt-6 sm:p-6"
-              >
-                <div className="mb-3 flex items-center space-x-2 sm:mb-4">
-                  <EyeIcon className="h-4 w-4 text-[#0071e3] sm:h-5 sm:w-5" />
-                  <h3 className="text-base font-medium text-[#1d1d1f] sm:text-lg">
-                    代码预览
-                  </h3>
-                </div>
-                <div className="overflow-hidden rounded-xl border border-[#e6e6e6] bg-white">
-                  <CodePreview
-                    html={codeImplementation.html ?? ""}
-                    css=""
-                    javascript={codeImplementation.js ?? ""}
-                    height="350px"
-                    isEmbedded={true}
-                  />
-                </div>
-              </motion.div>
-            )}
+            {
+              // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
+              (codeImplementation.html ||
+                (codeCompletion &&
+                  (isCodeLoading || isContinueCodeLoading))) && (
+                <CodeImplementation
+                  codeImplementation={codeImplementation}
+                  currentFile={currentFile}
+                  currentCode={currentCode}
+                  isCodeLoading={isCodeLoading}
+                  isContinueCodeLoading={isContinueCodeLoading}
+                  isReviewMode={isReviewMode}
+                  copiedText={copiedText ?? ""}
+                  isFixingCode={isFixingCode}
+                  fixedCode={fixedCode}
+                  issueDescription={issueDescription}
+                  isApplyingFix={isApplyingFix}
+                  codeFixCompletion={codeFixCompletion}
+                  codeContainerRef={codeContainerRef}
+                  handleCopyText={handleCopyTextWrapper}
+                  handleDownload={handleDownload}
+                  clearAllCode={clearAllCode}
+                  handleCodeReview={handleCodeReview}
+                  setIssueDescription={setIssueDescription}
+                  handleCancelFix={handleCancelFix}
+                  handleFixCode={handleFixCode}
+                  handleApplyFix={handleApplyFix}
+                />
+              )
+            }
+          </AnimatePresence>
+
+          {/* 代码预览部分 */}
+          <AnimatePresence>
+            {codeImplementation.html &&
+              !isCodeLoading &&
+              !isContinueCodeLoading && (
+                <CodePreviewSection html={codeImplementation.html} />
+              )}
           </AnimatePresence>
         </CardContent>
       </Card>
